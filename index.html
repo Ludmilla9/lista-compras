@@ -932,6 +932,7 @@
                     <span id="e-foto-text">Trocar foto</span>
                 </label>
                 <input type="file" id="e-foto-input" accept="image/*" onchange="handlePhotoSelect(this,'e')">
+                <button type="button" id="btn-remover-foto" class="btn btn-cancel hidden" style="margin-top:8px;font-size:13px;padding:10px;" onclick="removerFoto()">🗑 Remover foto</button>
             </div>
             <div class="modal-actions">
                 <button class="btn btn-cancel" onclick="closeModal('modal-edit')">Cancelar</button>
@@ -1086,6 +1087,8 @@
                         prev.src = dataUrl; prev.classList.remove('hidden');
                         document.getElementById('e-foto-icon').classList.add('hidden');
                         document.getElementById('e-foto-text').textContent = 'Foto trocada ✓';
+                        const btnRem = document.getElementById('btn-remover-foto');
+                        if (btnRem) btnRem.classList.remove('hidden');
                     }
                 };
                 img.src = e.target.result;
@@ -1156,14 +1159,28 @@
             pendingPhoto.e = it.foto || null;
             const prev = document.getElementById('e-foto-preview');
             const icon = document.getElementById('e-foto-icon');
+            const btnRemover = document.getElementById('btn-remover-foto');
             if (it.foto) {
                 prev.src = it.foto; prev.classList.remove('hidden'); icon.classList.add('hidden');
                 document.getElementById('e-foto-text').textContent = 'Trocar foto';
+                btnRemover.classList.remove('hidden');
             } else {
                 prev.classList.add('hidden'); icon.classList.remove('hidden');
                 document.getElementById('e-foto-text').textContent = 'Adicionar foto';
+                btnRemover.classList.add('hidden');
             }
             openModal('modal-edit');
+        };
+
+        window.removerFoto = function() {
+            pendingPhoto.e = '__REMOVER__';
+            const prev = document.getElementById('e-foto-preview');
+            const icon = document.getElementById('e-foto-icon');
+            prev.classList.add('hidden');
+            prev.src = '';
+            icon.classList.remove('hidden');
+            document.getElementById('e-foto-text').textContent = 'Adicionar foto';
+            document.getElementById('btn-remover-foto').classList.add('hidden');
         };
 
         window.salvarEdicao = async function() {
@@ -1174,7 +1191,9 @@
             it.quantidade = parseInt(document.getElementById('e-qtd').value) || 0;
             it.valor = parseFloat(document.getElementById('e-valor').value) || 0;
             it.loja = document.getElementById('e-loja').value;
-            if (pendingPhoto.e && pendingPhoto.e !== it.foto) {
+            if (pendingPhoto.e === '__REMOVER__') {
+                it.foto = null;
+            } else if (pendingPhoto.e && pendingPhoto.e !== it.foto) {
                 it.foto = await uploadPhoto(pendingPhoto.e, it.id);
             }
             closeModal('modal-edit');
