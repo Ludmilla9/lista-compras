@@ -758,6 +758,42 @@
         input[type="file"] { display: none; }
 
         .hidden { display: none !important; }
+
+        /* Interruptor de filtro */
+        .filter-toggle {
+            background: var(--paper);
+            border: 1px solid var(--line);
+            border-radius: 12px;
+            padding: 14px 16px;
+            margin-bottom: 16px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+
+        .filter-toggle-label {
+            font-family: -apple-system, sans-serif;
+            font-size: 14px;
+            font-weight: 600;
+            color: var(--sage-dark);
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .switch { position: relative; display: inline-block; width: 50px; height: 28px; }
+        .switch input { opacity: 0; width: 0; height: 0; }
+        .slider {
+            position: absolute; cursor: pointer; inset: 0;
+            background-color: var(--line); transition: .3s; border-radius: 28px;
+        }
+        .slider:before {
+            position: absolute; content: ""; height: 22px; width: 22px;
+            left: 3px; bottom: 3px; background-color: white;
+            transition: .3s; border-radius: 50%;
+        }
+        input:checked + .slider { background-color: var(--sage); }
+        input:checked + .slider:before { transform: translateX(22px); }
     </style>
 </head>
 <body>
@@ -825,6 +861,14 @@
                 <select class="filter-select" id="filtro-loja" onchange="renderLista()">
                     <option value="">Todas as lojas</option>
                 </select>
+            </div>
+
+            <div class="filter-toggle">
+                <span class="filter-toggle-label">🛒 Mostrar só itens para comprar</span>
+                <label class="switch">
+                    <input type="checkbox" id="filtro-comprar" onchange="renderLista()">
+                    <span class="slider"></span>
+                </label>
             </div>
 
             <div class="totals" id="totals-banner">
@@ -1203,12 +1247,14 @@
         window.renderLista = function() {
             const busca = (document.getElementById('busca-lista').value||'').toLowerCase();
             const filtroLoja = document.getElementById('filtro-loja').value;
+            const soComprar = document.getElementById('filtro-comprar').checked;
             const list = document.getElementById('lista-items');
 
             let visiveis = compras.filter(it => {
                 const okBusca = !busca || it.nome.toLowerCase().includes(busca) || (it.marca||'').toLowerCase().includes(busca);
                 const okLoja = !filtroLoja || it.loja === filtroLoja;
-                return okBusca && okLoja;
+                const okComprar = !soComprar || (Number(it.quantidade)||0) >= 1;
+                return okBusca && okLoja && okComprar;
             });
 
             // Totais (sempre com base em tudo, respeitando filtro de loja se ativo)
@@ -1232,7 +1278,9 @@
                 return;
             }
             if (visiveis.length === 0) {
-                list.innerHTML = `<div class="empty"><div class="empty-icon">🔍</div><p>Nenhum produto encontrado</p></div>`;
+                const msg = soComprar ? 'Nenhum item marcado para comprar' : 'Nenhum produto encontrado';
+                const sub = soComprar ? 'Aumente a quantidade dos itens que você quer comprar' : '';
+                list.innerHTML = `<div class="empty"><div class="empty-icon">🔍</div><p>${msg}</p>${sub?`<p class="sub">${sub}</p>`:''}</div>`;
                 return;
             }
 
