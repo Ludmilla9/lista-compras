@@ -1188,11 +1188,11 @@
 
             // Totais (sempre com base em tudo, respeitando filtro de loja se ativo)
             const base = filtroLoja ? compras.filter(i=>i.loja===filtroLoja) : compras;
-            const totalGeral = base.reduce((s,i)=> s + (i.quantidade*i.valor), 0);
+            const totalGeral = base.reduce((s,i)=> s + ((Number(i.quantidade)||0)*(Number(i.valor)||0)), 0);
             document.getElementById('total-geral').textContent = fmt(totalGeral);
 
             const porLoja = {};
-            compras.forEach(i => { porLoja[i.loja] = (porLoja[i.loja]||0) + i.quantidade*i.valor; });
+            compras.forEach(i => { porLoja[i.loja] = (porLoja[i.loja]||0) + (Number(i.quantidade)||0)*(Number(i.valor)||0); });
             document.getElementById('totals-store').innerHTML = Object.keys(porLoja)
                 .filter(l => porLoja[l] > 0)
                 .map(l => `<div class="store-total">${l}: <span>${fmt(porLoja[l])}</span></div>`).join('') ||
@@ -1213,7 +1213,7 @@
 
             list.innerHTML = visiveis.map(it => {
                 const idxReal = compras.indexOf(it);
-                const subtotal = it.quantidade * it.valor;
+                const subtotal = (Number(it.quantidade)||0) * (Number(it.valor)||0);
                 const fotoHtml = it.foto
                     ? `<img class="item-photo" src="${it.foto}" alt="${it.nome}">`
                     : `<div class="item-photo-empty">🥫</div>`;
@@ -1326,13 +1326,13 @@
         window.finalizarCompra = function() {
             const pegos = compras.filter(i => i.picked);
             if (pegos.length === 0) { alert('Marque os itens que você comprou (botão ✓)'); return; }
-            const total = pegos.reduce((s,i)=> s + i.quantidade*i.valor, 0);
+            const total = pegos.reduce((s,i)=> s + (Number(i.quantidade)||0)*(Number(i.valor)||0), 0);
             const registro = {
                 id: Date.now(),
                 data: new Date().toLocaleDateString('pt-BR'),
                 timestamp: new Date().toISOString(),
                 total,
-                itens: pegos.map(i => ({ nome:i.nome, marca:i.marca, quantidade:i.quantidade, valor:i.valor, loja:i.loja, subtotal:i.quantidade*i.valor }))
+                itens: pegos.map(i => ({ nome:i.nome, marca:i.marca, quantidade:i.quantidade, valor:i.valor, loja:i.loja, subtotal:(Number(i.quantidade)||0)*(Number(i.valor)||0) }))
             };
             historico.push(registro);
             // remove os itens pegos da lista
