@@ -987,7 +987,7 @@
 
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/10.7.0/firebase-app.js";
-        import { getDatabase, ref, set, onValue } from "https://www.gstatic.com/firebasejs/10.7.0/firebase-database.js";
+        import { getDatabase, ref, set, update, onValue } from "https://www.gstatic.com/firebasejs/10.7.0/firebase-database.js";
 
         const firebaseConfig = {
             apiKey: "AIzaSyB1mu2Nfcx5d6x--tlyguFZn7UuZC2Mjs",
@@ -1011,25 +1011,93 @@
         let editingId = null;
 
         // Referências Firebase
-        const comprasRef = ref(database, 'compras');
+        const comprasRef = ref(database, 'compras');          // formato antigo (lista inteira)
+        const itensRef = ref(database, 'compras-itens');      // NOVO: cada item pela sua id
+        const ordemRef = ref(database, 'compras-ordem');      // NOVO: a ordem (lista de ids)
         const precosRef = ref(database, 'precos');
         const historicoRef = ref(database, 'historico');
         const lojasRef = ref(database, 'lojas');
 
+        // ---- Controle de carregamento (evita sobrescrever dados com lista vazia) ----
+        let comprasCarregado = false;
+        let itensCarregado = false;
+        let ordemCarregada = false;
+        let precosCarregado = false;
+        let historicoCarregado = false;
+        let salvandoCompras = false; // ignora o "eco" do nosso próprio salvamento
+        let migrouItens = false;
+
+        let itensMap = {};   // { id: item }
+        let ordemIds = [];   // [id, id, ...]
+
+        // Monta o array "compras" a partir do mapa de itens + ordem
+        function reconstruirCompras() {
+            const ids = ordemIds.filter(id => itensMap[id]);
+            // acrescenta no fim qualquer item que exista mas não esteja na ordem
+            Object.keys(itensMap).forEach(id => { if (!ids.includes(id)) ids.push(id); });
+            compras = ids.map(id => itensMap[id]).filter(Boolean);
+        }
+
+        // Migração automática: se houver dados no formato antigo e ainda não no novo,
+        // copia os itens para a nova estrutura por id (uma vez só).
+        function migrarSePreciso(listaAntiga) {
+            if (migrouItens) return;
+            if (!listaAntiga || !listaAntiga.length) return;
+            if (Object.keys(itensMap).length > 0) return; // já tem dados no formato novo
+            migrouItens = true;
+            const patch = {};
+            const ordem = [];
+            listaAntiga.forEach(it => {
+                if (it && it.id != null) { patch[String(it.id)] = it; ordem.push(String(it.id)); }
+            });
+            salvandoCompras = true;
+            update(itensRef, patch).then(() => set(ordemRef, ordem))
+                .catch(e => console.error('Erro na migração:', e))
+                .finally(() => { setTimeout(() => { salvandoCompras = false; }, 600); });
+        }
+
         // ---- Sincronização ----
+        let listaAntigaRemota = null; // guarda os dados do formato antigo p/ migrar
+
+        // Formato antigo (só para migrar dados existentes uma vez)
         onValue(comprasRef, (snap) => {
             const d = snap.val();
-            compras = Array.isArray(d) ? d : (d ? Object.values(d) : []);
+            listaAntigaRemota = Array.isArray(d) ? d.filter(x => x) : (d ? Object.values(d) : []);
+            if (itensCarregado) migrarSePreciso(listaAntigaRemota);
+        });
+
+        // NOVO: itens por id (a fonte principal agora)
+        onValue(itensRef, (snap) => {
+            const d = snap.val() || {};
+            itensMap = d;
+            itensCarregado = true;
+            comprasCarregado = true;
+            // Se o formato novo está vazio mas existem dados antigos, migra agora
+            if (Object.keys(itensMap).length === 0 && listaAntigaRemota && listaAntigaRemota.length) {
+                migrarSePreciso(listaAntigaRemota);
+            }
+            reconstruirCompras();
+            renderLista();
+        });
+
+        // NOVO: ordem dos itens
+        onValue(ordemRef, (snap) => {
+            const d = snap.val();
+            ordemIds = Array.isArray(d) ? d.map(String) : [];
+            ordemCarregada = true;
+            reconstruirCompras();
             renderLista();
         });
         onValue(precosRef, (snap) => {
             const d = snap.val();
-            precos = Array.isArray(d) ? d : (d ? Object.values(d) : []);
+            precos = Array.isArray(d) ? d.filter(x => x) : (d ? Object.values(d) : []);
+            precosCarregado = true;
             renderPrecos();
         });
         onValue(historicoRef, (snap) => {
             const d = snap.val();
-            historico = Array.isArray(d) ? d : (d ? Object.values(d) : []);
+            historico = Array.isArray(d) ? d.filter(x => x) : (d ? Object.values(d) : []);
+            historicoCarregado = true;
             renderHistorico();
         });
         onValue(lojasRef, (snap) => {
@@ -1040,26 +1108,100 @@
             renderPrecos();
         });
 
-        function saveAll() {
+        function mostrarStatus(texto, erro) {
             const s = document.getElementById('sync-status');
-            s.textContent = ''; 
-            s.classList.add('syncing');
-            const dot = document.createElement('span'); dot.className='sync-dot';
-            s.prepend(dot); s.append('Salvando...');
-            Promise.all([
-                set(comprasRef, compras),
-                set(precosRef, precos),
-                set(historicoRef, historico),
-                set(lojasRef, lojas)
-            ]).then(() => {
-                s.classList.remove('syncing');
-                s.innerHTML = '<span class="sync-dot"></span>Sincronizado';
-            }).catch((e) => {
-                s.innerHTML = '<span class="sync-dot"></span>Erro ao salvar';
-                console.error(e);
-            });
+            if (!s) return;
+            if (erro) { s.innerHTML = '<span class="sync-dot"></span>' + texto; }
+            else { s.classList.remove('syncing'); s.innerHTML = '<span class="sync-dot"></span>' + texto; }
+        }
+
+        // Salva SOMENTE a lista de compras (sem tocar em preços/histórico)
+        function salvarCompras() {
+            if (!comprasCarregado) return; // trava: não salva antes de carregar
+            mostrarStatus('Salvando...');
+            document.getElementById('sync-status').classList.add('syncing');
+            salvandoCompras = true;
+            set(comprasRef, compras)
+                .then(() => mostrarStatus('Sincronizado'))
+                .catch((e) => { mostrarStatus('Erro ao salvar', true); console.error(e); })
+                .finally(() => { setTimeout(() => { salvandoCompras = false; }, 400); });
+        }
+
+        // Salva APENAS um item (pela sua id única) na sub-lista "itens" do Firebase.
+        // Marcar pego, mudar quantidade etc. atualiza só aquele item — o outro celular
+        // pode marcar outro item ao mesmo tempo sem apagar o seu.
+        function salvarItem(item) {
+            if (!comprasCarregado || !item || item.id == null) return;
+            mostrarStatus('Salvando...');
+            document.getElementById('sync-status').classList.add('syncing');
+            salvandoCompras = true;
+            const patch = {}; patch[String(item.id)] = item;
+            update(itensRef, patch)
+                .then(() => mostrarStatus('Sincronizado'))
+                .catch((e) => { mostrarStatus('Erro ao salvar', true); console.error(e); })
+                .finally(() => { setTimeout(() => { salvandoCompras = false; }, 500); });
+        }
+        window.salvarItem = salvarItem;
+
+        // Remove um item pela id
+        function removerItemRemoto(id) {
+            if (id == null) return;
+            salvandoCompras = true;
+            const patch = {}; patch[String(id)] = null;
+            update(itensRef, patch)
+                .then(() => mostrarStatus('Sincronizado'))
+                .catch((e) => { mostrarStatus('Erro ao salvar', true); console.error(e); })
+                .finally(() => { setTimeout(() => { salvandoCompras = false; }, 500); });
+        }
+        window.removerItemRemoto = removerItemRemoto;
+
+        // Guarda a ORDEM dos itens (lista de ids) separadamente, para reordenar
+        function salvarOrdem() {
+            if (!comprasCarregado) return;
+            salvandoCompras = true;
+            set(ordemRef, compras.map(i => String(i.id)))
+                .then(() => mostrarStatus('Sincronizado'))
+                .catch((e) => { mostrarStatus('Erro ao salvar', true); console.error(e); })
+                .finally(() => { setTimeout(() => { salvandoCompras = false; }, 500); });
+        }
+        window.salvarOrdem = salvarOrdem;
+        function salvarPrecos() {
+            if (!precosCarregado) return;
+            mostrarStatus('Salvando...');
+            document.getElementById('sync-status').classList.add('syncing');
+            set(precosRef, precos)
+                .then(() => mostrarStatus('Sincronizado'))
+                .catch((e) => { mostrarStatus('Erro ao salvar', true); console.error(e); });
+        }
+        function salvarHistorico() {
+            if (!historicoCarregado) return;
+            mostrarStatus('Salvando...');
+            document.getElementById('sync-status').classList.add('syncing');
+            set(historicoRef, historico)
+                .then(() => mostrarStatus('Sincronizado'))
+                .catch((e) => { mostrarStatus('Erro ao salvar', true); console.error(e); });
+        }
+        function salvarLojas() {
+            mostrarStatus('Salvando...');
+            document.getElementById('sync-status').classList.add('syncing');
+            set(lojasRef, lojas)
+                .then(() => mostrarStatus('Sincronizado'))
+                .catch((e) => { mostrarStatus('Erro ao salvar', true); console.error(e); });
+        }
+
+        // saveAll antigo mantido por compatibilidade, mas agora respeita a trava
+        // e salva cada parte separadamente (não sobrescreve o que não mudou)
+        function saveAll() {
+            salvarCompras();
+            salvarPrecos();
+            salvarHistorico();
+            salvarLojas();
         }
         window.saveAll = saveAll;
+        window.salvarCompras = salvarCompras;
+        window.salvarPrecos = salvarPrecos;
+        window.salvarHistorico = salvarHistorico;
+        window.salvarLojas = salvarLojas;
 
         // ---- Utilidades ----
         function fmt(v) { return 'CHF ' + (Number(v)||0).toFixed(2); }
@@ -1100,7 +1242,7 @@
             document.getElementById('nova-loja-nome').value = '';
             refreshLojaSelects();
             if (lojaSelectTarget) document.getElementById(lojaSelectTarget).value = nome;
-            saveAll();
+            salvarLojas();
             closeModal('modal-loja');
         };
 
@@ -1149,7 +1291,8 @@
         window.addItem = async function() {
             const nome = document.getElementById('l-nome').value.trim();
             if (!nome) { alert('Escreva o nome do produto'); return; }
-            const id = Date.now();
+            // id única mesmo se os dois adicionarem no mesmo instante
+            const id = Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 7);
             const item = {
                 id,
                 nome,
@@ -1164,6 +1307,8 @@
                 item.foto = await uploadPhoto(pendingPhoto.l, id);
             }
             compras.push(item);
+            itensMap[String(id)] = item;
+            ordemIds.push(String(id));
             // limpa formulário
             document.getElementById('l-nome').value = '';
             document.getElementById('l-marca').value = '';
@@ -1172,29 +1317,34 @@
             pendingPhoto.l = null;
             document.getElementById('l-foto-icon').outerHTML = `<span class="photo-upload-icon" id="l-foto-icon">📷</span>`;
             document.getElementById('l-foto-text').textContent = 'Tocar para tirar foto ou escolher da galeria';
-            saveAll();
+            renderLista();
+            salvarItem(item);
+            salvarOrdem();
         };
 
         window.adjustQty = function(id, delta) {
-            const it = compras.find(i => i.id === id);
-            if (it) { it.quantidade = Math.max(0, it.quantidade + delta); saveAll(); }
+            const it = compras.find(i => String(i.id) === String(id));
+            if (it) { it.quantidade = Math.max(0, it.quantidade + delta); renderLista(); salvarItem(it); }
         };
 
         window.togglePicked = function(id) {
-            const it = compras.find(i => i.id === id);
-            if (it) { it.picked = !it.picked; saveAll(); }
+            const it = compras.find(i => String(i.id) === String(id));
+            if (it) { it.picked = !it.picked; renderLista(); salvarItem(it); }
         };
 
         window.deleteItem = function(id) {
-            compras = compras.filter(i => i.id !== id);
+            compras = compras.filter(i => String(i.id) !== String(id));
+            ordemIds = ordemIds.filter(x => x !== String(id));
+            delete itensMap[String(id)];
             renderLista();
-            saveAll();
+            removerItemRemoto(id);
+            salvarOrdem();
         };
 
         window.openEdit = function(id) {
-            const it = compras.find(i => i.id === id);
+            const it = compras.find(i => String(i.id) === String(id));
             if (!it) return;
-            editingId = id;
+            editingId = it.id;
             document.getElementById('e-nome').value = it.nome;
             document.getElementById('e-marca').value = it.marca || '';
             document.getElementById('e-qtd').value = it.quantidade;
@@ -1228,7 +1378,7 @@
         };
 
         window.salvarEdicao = async function() {
-            const it = compras.find(i => i.id === editingId);
+            const it = compras.find(i => String(i.id) === String(editingId));
             if (!it) return;
             it.nome = document.getElementById('e-nome').value.trim();
             it.marca = document.getElementById('e-marca').value.trim();
@@ -1240,8 +1390,10 @@
             } else if (pendingPhoto.e && pendingPhoto.e !== it.foto) {
                 it.foto = await uploadPhoto(pendingPhoto.e, it.id);
             }
+            itensMap[String(it.id)] = it;
             closeModal('modal-edit');
-            saveAll();
+            renderLista();
+            salvarItem(it);
         };
 
         window.renderLista = function() {
@@ -1304,13 +1456,13 @@
                         </div>
                         <div class="item-controls">
                             <div class="qty-control">
-                                <button class="qty-btn" onclick="adjustQty(${it.id},-1)">−</button>
+                                <button class="qty-btn" onclick="adjustQty('${it.id}',-1)">−</button>
                                 <span class="qty-value">${it.quantidade}</span>
-                                <button class="qty-btn" onclick="adjustQty(${it.id},1)">+</button>
+                                <button class="qty-btn" onclick="adjustQty('${it.id}',1)">+</button>
                             </div>
-                            <button class="icon-btn ${it.picked?'btn-uncheck':'btn-check'}" onclick="togglePicked(${it.id})">${it.picked?'↩':'✓'}</button>
-                            <button class="icon-btn btn-edit" onclick="openEdit(${it.id})">✎</button>
-                            <button class="icon-btn btn-trash" onclick="deleteItem(${it.id})">🗑</button>
+                            <button class="icon-btn ${it.picked?'btn-uncheck':'btn-check'}" onclick="togglePicked('${it.id}')">${it.picked?'↩':'✓'}</button>
+                            <button class="icon-btn btn-edit" onclick="openEdit('${it.id}')">✎</button>
+                            <button class="icon-btn btn-trash" onclick="deleteItem('${it.id}')">🗑</button>
                         </div>
                     </div>
                 </li>`;
@@ -1391,8 +1543,9 @@
             if (from === null || to === null || from === to) return;
             const moved = compras.splice(from, 1)[0];
             compras.splice(to, 0, moved);
+            ordemIds = compras.map(i => String(i.id));
             renderLista();
-            saveAll();
+            salvarOrdem();
         }
 
         // ---- Finalizar compra ----
@@ -1408,9 +1561,19 @@
                 itens: pegos.map(i => ({ nome:i.nome, marca:i.marca, quantidade:i.quantidade, valor:i.valor, loja:i.loja, subtotal:(Number(i.quantidade)||0)*(Number(i.valor)||0) }))
             };
             historico.push(registro);
-            // remove os itens pegos da lista
+            // remove os itens pegos da lista (um por um, pela id)
+            const patchRemover = {};
+            pegos.forEach(i => {
+                patchRemover[String(i.id)] = null;
+                delete itensMap[String(i.id)];
+                ordemIds = ordemIds.filter(x => x !== String(i.id));
+            });
             compras = compras.filter(i => !i.picked);
-            saveAll();
+            renderLista();
+            salvandoCompras = true;
+            update(itensRef, patchRemover).finally(() => { setTimeout(() => { salvandoCompras = false; }, 600); });
+            salvarOrdem();
+            salvarHistorico();
             alert('Compra finalizada e salva no histórico! Total: ' + fmt(total));
         };
 
@@ -1434,7 +1597,7 @@
 
             document.getElementById('p-nome').value = '';
             document.getElementById('p-valor').value = '';
-            saveAll();
+            salvarPrecos();
         };
 
         window.deletePreco = function(prodId, loja) {
@@ -1443,7 +1606,7 @@
             prod.precos = prod.precos.filter(x => x.loja !== loja);
             if (prod.precos.length === 0) precos = precos.filter(p => p.id !== prodId);
             renderPrecos();
-            saveAll();
+            salvarPrecos();
         };
 
         window.renderPrecos = function() {
@@ -1501,7 +1664,7 @@
             if (!valor || valor<=0) { alert('Escreva o preço'); return; }
             const ex = prod.precos.find(x=>x.loja===loja);
             if (ex) ex.valor = valor; else prod.precos.push({loja, valor});
-            saveAll();
+            salvarPrecos();
         };
 
         // ---- HISTÓRICO ----
@@ -1514,7 +1677,7 @@
             if (!confirm('Excluir este registro de compra?')) return;
             historico = historico.filter(h => h.id !== id);
             renderHistorico();
-            saveAll();
+            salvarHistorico();
         };
 
         window.renderHistorico = function() {
